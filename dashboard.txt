@@ -2,32 +2,32 @@ return {
   { "folke/snacks.nvim", opts = { dashboard = { enabled = false } } },
   {
     "nvimdev/dashboard-nvim",
-    lazy = false,
+    lazy = false, -- As https://github.com/nvimdev/dashboard-nvim/pull/450, dashboard-nvim shouldn't be lazy-loaded to properly handle stdin.
     opts = function()
-      -- 1. 配置图片路径（放在 ~/.config/nvim/ 下）
-      local img_path = vim.fn.stdpath("config") .. "/ndqk.png"
-      local img_width = 40 -- 图片显示宽度
-      local img_height = 20 -- 图片显示高度
+      -- 1. 指定你的 txt 文件路径（请确保文件放在这个位置）
+      local logo_path = vim.fn.stdpath("config") .. "/ndqk.txt"
+      local logo = ""
 
-      -- 2. 生成空白行，给图片腾出悬浮空间
-      local logo_lines = {}
-      for _ = 1, img_height do
-        table.insert(logo_lines, string.rep(" ", img_width))
+      -- 2. 读取 txt 文件内容
+      local file = io.open(logo_path, "r")
+      if file then
+        logo = file:read("*a") -- 读取全部内容
+        file:close()
       end
-      -- 在图片上方留出 4 行空白
-      logo_lines = vim.list_extend({ "", "", "", "" }, logo_lines)
-      -- 在图片下方留出空白
-      table.insert(logo_lines, "")
-      table.insert(logo_lines, "")
 
-      -- 3. Dashboard 配置
+      -- 3. 保留你原来的上下留白逻辑
+      -- 如果你觉得空白太多，可以把这里的 8 改小一点，比如 4 或 2
+      logo = string.rep("\n", 1) .. logo .. "\n\n"
+
       local opts = {
         theme = "doom",
         hide = {
+          -- this is taken care of by lualine
+          -- enabling this messes up the actual laststatus setting after loading a file
           statusline = false,
         },
         config = {
-          header = logo_lines,
+          header = vim.split(logo, "\n"),
           -- stylua: ignore
           center = {
             { action = 'lua LazyVim.pick()()',                           desc = " Find File",       icon = " ", key = "f" },
@@ -65,52 +65,6 @@ return {
           end,
         })
       end
-
-      -- 4. 监听 Dashboard 打开，渲染真实图片
-      local dashboard_group = vim.api.nvim_create_augroup("dashboard_image_render", { clear = true })
-      vim.api.nvim_create_autocmd("FileType", {
-        group = dashboard_group,
-        pattern = "dashboard",
-        callback = function(event)
-          vim.defer_fn(function()
-            local buf = event.buf
-            local win = vim.api.nvim_get_current_win()
-
-            if not vim.api.nvim_win_is_valid(win) then
-              return
-            end
-
-            -- 计算图片居中坐标
-            local win_width = vim.api.nvim_win_get_width(win)
-            local x = math.floor((win_width - img_width) / 2)
-            local y = 4 -- 对应上方留白的 4 行
-
-            -- 仅在 kitty 中渲染
-            if vim.env.TERM == "xterm-kitty" then
-              local image = require("image").from_file(img_path, {
-                window = win,
-                buffer = buf,
-                x = x,
-                y = y,
-                width = img_width,
-                height = img_height,
-              })
-              image:render()
-            end
-          end, 50)
-        end,
-      })
-
-      -- 5. 离开 dashboard 时清除图片，防止残影
-      vim.api.nvim_create_autocmd("BufLeave", {
-        group = dashboard_group,
-        pattern = "dashboard",
-        callback = function(event)
-          if vim.env.TERM == "xterm-kitty" then
-            require("image.hooks").clear_images(event.buf)
-          end
-        end,
-      })
 
       return opts
     end,
