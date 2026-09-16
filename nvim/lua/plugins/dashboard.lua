@@ -23,24 +23,61 @@ return {
       -- 渲染（或按新窗口尺寸重渲染）图片
       local current_image = nil
       local function render_image(buf)
-        local win = vim.api.nvim_get_current_win()
-        if not vim.api.nvim_win_is_valid(win) or vim.env.TERM ~= "xterm-kitty" then
+        if vim.env.TERM ~= "xterm-kitty" then
           return
         end
-        if current_image then
-          pcall(function()
-            current_image:clear()
-          end)
-          current_image = nil
+        -- 找到显示该 buffer 的窗口（光标可能已不在 dashboard 窗口）
+        local win
+        for _, w in ipairs(vim.api.nvim_list_wins()) do
+          if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == buf then
+            win = w
+            break
+          end
         end
+        if not win then
+          return
+        end
+        -- 清掉所有旧图（含引用已丢失的残留实例），避免出现多张/残影
+        pcall(function()
+          require("image").clear()
+        end)
+        current_image = nil
 
         local w, h = image_size(win)
-        local x = math.floor((vim.api.nvim_win_get_width(win) - w) / 2)
+
+        -- 不改任何 buffer 文字（快捷键是 extmark，重写行会破坏布局）。
+        -- 图片锚定到菜单：header 区全是空白，第一个非空行即菜单首项，
+        -- 图片水平对齐菜单块（含 eol 上的快捷键 extmark，约 3 列）、底边贴着菜单上方
+        local anchor_line, menu_col, anchor_width
+        for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+          if l:match("%S") then
+            local leading = l:match("^%s*"):len()
+            anchor_line = i
+            menu_col = leading -- 前导空格数即内容的屏幕列（0 起，无水平滚动）
+            anchor_width = vim.fn.strdisplaywidth(l) - leading + 3
+            break
+          end
+        end
+        if not anchor_line then
+          return
+        end
+
+        -- 实测菜单首行在屏幕上的行号（自动含滚动）
+        local menu_row
+        local cursor = vim.api.nvim_win_get_cursor(win)
+        vim.api.nvim_win_call(win, function()
+          vim.api.nvim_win_set_cursor(win, { anchor_line, 0 })
+          menu_row = vim.fn.winline() - 1 -- 0 起
+        end)
+        vim.api.nvim_win_set_cursor(win, cursor)
+
+        local x = math.max(0, menu_col + math.floor((anchor_width - w) / 2))
+        local y = math.max(0, menu_row - 2 - h) -- 底边留在菜单上方两行空行处
         current_image = require("image").from_file(img_path, {
           window = win,
           buffer = buf,
           x = x,
-          y = 4,
+          y = y,
           width = w,
           height = h,
         })
@@ -110,32 +147,73 @@ return {
         group = dashboard_group,
         pattern = "dashboard",
         callback = function(event)
+          local buf = event.buf
+          -- dashboard 在 VimResized 时会自己重排 buffer；监听其行变化，
+          -- 每次重排后跟着重渲染图片，避免用到过期的菜单位置
+          if not vim.b[buf].image_attached then
+            vim.b[buf].image_attached = true
+            vim.api.nvim_buf_attach(buf, false, {
+              on_lines = function()
+                vim.defer_fn(function()
+                  if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].filetype == "dashboard" then
+                    render_image(buf)
+                  end
+                end, 10)
+              end,
+            })
+          end
           vim.defer_fn(function()
-            render_image(event.buf)
+            if vim.api.nvim_buf_is_valid(buf) then
+              render_image(buf)
+            end
           end, 50)
         end,
       })
 
-      -- 窗口缩放时清除旧图并按新尺寸重新渲染
+      -- 兜底：dashboard 未重排时（旧版行为）窗口缩放后自行重渲染
       vim.api.nvim_create_autocmd("VimResized", {
         group = dashboard_group,
         callback = function()
-          for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-            if vim.bo[buf].filetype == "dashboard" then
-              render_image(buf)
+          vim.defer_fn(function()
+            for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+              if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].filetype == "dashboard" then
+                render_image(buf)
+              end
             end
+          end, 150)
+        end,
+      })
+
+      -- dashboard buffer 被删除时彻底清图，防止残影
+      vim.api.nvim_create_autocmd("BufWipeout", {
+        group = dashboard_group,
+        callback = function(event)
+          if vim.bo[event.buf].filetype == "dashboard" then
+            pcall(function()
+              require("image").clear()
+            end)
+            current_image = nil
           end
         end,
       })
 
-      -- 5. 离开 dashboard 时清除图片，防止残影
+      -- 5. 光标离开 dashboard 时：仍显示在其他窗口就重绘，否则清除防残影
       vim.api.nvim_create_autocmd("BufLeave", {
         group = dashboard_group,
         callback = function(event)
           if vim.bo[event.buf].filetype == "dashboard" then
-            if current_image then
+            local visible = false
+            for _, w in ipairs(vim.api.nvim_list_wins()) do
+              if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == event.buf then
+                visible = true
+                break
+              end
+            end
+            if visible then
+              render_image(event.buf)
+            else
               pcall(function()
-                current_image:clear()
+                require("image").clear()
               end)
               current_image = nil
             end
