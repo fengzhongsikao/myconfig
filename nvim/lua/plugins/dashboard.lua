@@ -6,8 +6,46 @@ return {
     opts = function()
       -- 1. 配置图片路径（放在 ~/.config/nvim/ 下）
       local img_path = vim.fn.stdpath("config") .. "/ndqk.png"
-      local img_width = 40 -- 图片显示宽度
-      local img_height = 20 -- 图片显示高度
+      local img_width = 40 -- 图片最大显示宽度
+      local img_height = 20 -- 图片最大显示高度
+
+      -- 按当前窗口尺寸计算图片实际宽高（保持 2:1 比例，不超出窗口）
+      local function image_size(win)
+        local win_width = vim.api.nvim_win_get_width(win)
+        local win_height = vim.api.nvim_win_get_height(win)
+        local w = math.min(img_width, math.floor(win_width * 0.8))
+        local h = math.min(img_height, math.floor(win_height * 0.5))
+        -- 取较小的缩放比例，保持宽高比
+        local scale = math.min(w / img_width, h / img_height)
+        return math.floor(img_width * scale), math.floor(img_height * scale)
+      end
+
+      -- 渲染（或按新窗口尺寸重渲染）图片
+      local current_image = nil
+      local function render_image(buf)
+        local win = vim.api.nvim_get_current_win()
+        if not vim.api.nvim_win_is_valid(win) or vim.env.TERM ~= "xterm-kitty" then
+          return
+        end
+        if current_image then
+          pcall(function()
+            current_image:clear()
+          end)
+          current_image = nil
+        end
+
+        local w, h = image_size(win)
+        local x = math.floor((vim.api.nvim_win_get_width(win) - w) / 2)
+        current_image = require("image").from_file(img_path, {
+          window = win,
+          buffer = buf,
+          x = x,
+          y = 4,
+          width = w,
+          height = h,
+        })
+        current_image:render()
+      end
 
       -- 2. 生成空白行，给图片腾出悬浮空间
       local logo_lines = {}
@@ -73,41 +111,34 @@ return {
         pattern = "dashboard",
         callback = function(event)
           vim.defer_fn(function()
-            local buf = event.buf
-            local win = vim.api.nvim_get_current_win()
-
-            if not vim.api.nvim_win_is_valid(win) then
-              return
-            end
-
-            -- 计算图片居中坐标
-            local win_width = vim.api.nvim_win_get_width(win)
-            local x = math.floor((win_width - img_width) / 2)
-            local y = 4 -- 对应上方留白的 4 行
-
-            -- 仅在 kitty 中渲染
-            if vim.env.TERM == "xterm-kitty" then
-              local image = require("image").from_file(img_path, {
-                window = win,
-                buffer = buf,
-                x = x,
-                y = y,
-                width = img_width,
-                height = img_height,
-              })
-              image:render()
-            end
+            render_image(event.buf)
           end, 50)
+        end,
+      })
+
+      -- 窗口缩放时清除旧图并按新尺寸重新渲染
+      vim.api.nvim_create_autocmd("VimResized", {
+        group = dashboard_group,
+        callback = function()
+          for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.bo[buf].filetype == "dashboard" then
+              render_image(buf)
+            end
+          end
         end,
       })
 
       -- 5. 离开 dashboard 时清除图片，防止残影
       vim.api.nvim_create_autocmd("BufLeave", {
         group = dashboard_group,
-        pattern = "dashboard",
         callback = function(event)
-          if vim.env.TERM == "xterm-kitty" then
-            require("image.hooks").clear_images(event.buf)
+          if vim.bo[event.buf].filetype == "dashboard" then
+            if current_image then
+              pcall(function()
+                current_image:clear()
+              end)
+              current_image = nil
+            end
           end
         end,
       })
